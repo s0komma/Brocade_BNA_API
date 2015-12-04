@@ -11,7 +11,7 @@ ip_addr = "192.1.1.1"
 
 
 # Create HTTPSConnection object and connect to the server.
-connection = httplib.HTTPSConnection("10.65.60.39")
+connection = httplib.HTTPSConnection("192.1.1.1")
 ###########################
 # Log in to Network Advisor
 ###########################
