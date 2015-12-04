@@ -1,0 +1,199 @@
+#Script used to push data to SQLlit3 DB
+#!/usr/bin/env python
+import httplib
+import json
+import sqlite3
+
+ip_addr = "192.1.1.1"
+#switch_name = "core1.local.com"
+#switch_id = "10:00:00:00:00:00:00:00"
+
+
+
+# Create HTTPSConnection object and connect to the server.
+connection = httplib.HTTPSConnection("10.65.60.39")
+###########################
+# Log in to Network Advisor
+###########################
+connection.request('POST', 'https://'+ip_addr+'/rest/login',
+headers={"WSUsername":"Administrator",
+"WSPassword":"password",
+"Accept":"application/vnd.brocade.networkadvisor+json;version=v1"})
+response = connection.getresponse()
+WStoken = response.getheader('WStoken')
+connection.close()
+
+
+######################################################
+# Retrieve list of switches in the context of a fabric
+######################################################
+class monitor:
+    def __init__(self):
+        self.inv = {}
+        self.portdata = {}
+        self.zonedb = []
+
+
+    def wget(self, url):
+        connection.connect()
+        connection.request('GET',
+        url=url, headers={"WStoken":WStoken, "Accept":"application/vnd.brocade.networkadvisor+json;version=v1"})
+        response = connection.getresponse()
+        json_response_bytes = response.read()
+        json_response_string = str(json_response_bytes).encode('utf8')
+        return json.loads(json_response_string)
+
+
+    def get_inv(self):
+        url = 'https://'+ip_addr+'/rest/resourcegroups/All/fcswitches'
+        inv = self.wget(url)
+        for inve in inv['fcSwitches']:
+            self.inv[inve['wwn']] = { 'name': inve['name'], 'key' : inve['key'], 'switch_role': inve['role'], 'fabric_id' : inve['virtualFabricId'] }
+
+    def get_portdata(self, switch_id):
+        url = 'https://'+ip_addr+'/rest/resourcegroups/All/fcswitches/'+switch_id+'/fcports'
+        portdata = self.wget(url)
+        print switch_id
+        for fcport in portdata['fcPorts']:
+            wwn = fcport['remotePortWwn']
+            slot =""
+            port =""
+            try :
+                slot = fcport['slotNumber']
+                port = fcport['portNumber']
+            except :
+                pass
+            self.portdata[wwn] = { 'slotnum' : slot, 'portnum' : port , 'switchdata' : self.inv[switch_id] }
+            print self.portdata[wwn]
+
+    def get_zonedb(self, switch_id):
+
+        url = 'https://'+ip_addr+'/rest/resourcegroups/All/fcfabrics/'+switch_id+'/zonedbs?active=value'
+        print switch_id
+        zoned = self.wget(url)
+        print zoned
+        aliasdb = {}
+        for alias in zoned['zonedbs'][0]['zonealiases']:
+            aliasdb[ alias['name'] ] = alias['memberNames'][0]
+
+        for zone in zoned['zonedbs'][0]['zones']:
+            hname = zone['aliasNames'][0]
+            hwwn = aliasdb[hname]
+            swwn = ""
+            sname = ""
+            try:
+                sname = zone['aliasNames'][1]
+                swwn = aliasdb[sname]
+            except:
+                pass
+            self.zonedb.append( {'hostname': hname, 'hostwwn': hwwn, 'storagename': sname, 'storagewwn': swwn } )
+            print self.zonedb
+    def process_interswitch(self):
+        self.get_inv()
+        for inv in self.inv.values():
+            switch_id = inv['key']
+            swname = inv['name']
+            if "core" in swname and swname.startswith(('v1','v5')):
+                self.get_zonedb(switch_id)
+                print switch_id
+
+##########DB Create###############
+        connection = sqlite3.connect('/your_path/db_name.db')
+        cursor = connection.cursor()
+        cursor.execute('''DROP TABLE table_name''')
+        cursor.execute('''CREATE TABLE table_name (hostswitchname varchar(20),hslotnum varchar(20), hportnum varchar(20), hostname varchar(20),hostwwn varchar(20),storswitchname varchar(20),sslotnum varchar(20), sportnum varchar(20), storname varchar(20),storwwn varchar(20)) ''')
+        connection.commit()
+
+
+        for inv in self.inv.values():
+            switch_id = inv['key']
+            self.get_portdata(switch_id)
+            with connection:
+                for portmap in self.zonedb:
+                    sqldata = []
+                    hwwn = portmap['hostwwn']
+                    swwn = portmap['storagewwn']
+                    hslot = ""
+                    hport = ""
+                    sport = ""
+                    sslot = ""
+                    ssw_name = ""
+                    hsw_name = ""
+                    try :
+                        hslot = self.portdata[hwwn]['slotnum']
+                    except :
+                        pass
+                    try :
+                        hport = self.portdata[hwwn]['portnum']
+                    except :
+                        pass
+                    try :
+                        sslot = self.portdata[swwn]['slotnum']
+                    except :
+                        pass
+                    try :
+                        sport = self.portdata[swwn]['portnum']
+                    except :
+                        pass
+                    try :
+                        ssw_name =  self.portdata[swwn]['switchdata']['name']
+                    except :
+                        pass
+                    try :
+                        hsw_name = self.portdata[hwwn]['switchdata']['name']
+                    except :
+                        pass
+         #####################Pushing the data ##################
+                    try :
+                        sqldata.append ( "Not Logged In" if hsw_name == "" else hsw_name,)
+                    except :
+                        sqldata.append ( "Not Logged In",)
+                    try :
+                        sqldata.append( "Not Logged In" if hslot == "" else hslot,)
+                    except :
+                        sqldata.append ( "Not Logged In",)
+                    try :
+                        sqldata.append ( "Not Logged In" if hport == "" else hport,)
+                    except :
+                        sqldata.append ( "Not Logged In",)
+                    try :
+                        sqldata.append ( portmap['hostname'],)
+                    except :
+                        sqldata.append ( "N/A",)
+                    try :
+                        sqldata.append ( hwwn,)
+                    except :
+                        sqldata.append ( "N/A",)
+                    try :
+                        sqldata.append ( "Not Logged" if ssw_name == "" else ssw_name,)
+                    except :
+                        sqldata.append ( "Not Logged In",)
+                    try :
+                        sqldata.append ( "Not Logged In" if sslot == "" else sslot,)
+                    except :
+                        sqldata.append ( "Not Logged In",)
+                    try :
+                        sqldata.append ( "Not Logged In" if sslot == "" else sport,)
+                    except :
+                        sqldata.append ( "Not Logged In",)
+
+                    try :
+                        sqldata.append ( portmap['storagename'],)
+                    except :
+                        sqldata.append ( "N/A",)
+                    try :
+                        sqldata.append ( swwn)
+                    except :
+                        sqldata.append ( "N/A")
+
+                    if not sqldata:
+                        continue
+
+                    cursor.execute("insert into table_name (hostswitchname ,hslotnum , hportnum , hostname ,hostwwn ,storswitchname ,sslotnum , sportnum , storname ,storwwn ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ? )", (sqldata))
+                    connection.commit()
+            #hslot, hport, portmap['hostname'], hwwn, sslot, sport, portmap['storagename'], swwn
+
+
+
+M = monitor()
+M.process_interswitch()
